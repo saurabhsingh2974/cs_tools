@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
 import datetime as dt
 import functools as ft
 import itertools as it
@@ -11,13 +10,11 @@ import operator
 import awesomeversion
 
 from cs_tools import _types, validators
-from cs_tools._types import TableRowsFormat
 from cs_tools.datastructures import SessionContext
 
 from . import models
 
 log = logging.getLogger(__name__)
-ArbitraryJsonFormat = list[dict[str, Any]]
 
 
 def ts_cluster(data: SessionContext) -> _types.TableRowsFormat:
@@ -114,30 +111,6 @@ def ts_group(data: list[_types.APIResult], *, cluster: _types.GUID) -> _types.Ta
     return reshaped
 
 
-def to_group_v1(data: ArbitraryJsonFormat, cluster: str) -> TableRowsFormat:
-    """Reshapes groups/search -> searchable.models.Group. Needed for V1 API."""
-    out: TableRowsFormat = []
-
-    for row in data:
-        for org_id in row["header"].get("orgIds", [0]):
-            out.append(
-                models.Group.validated_init(
-                    cluster_guid=cluster,
-                    org_id=org_id,
-                    group_guid=row["header"]["id"],
-                    group_name=row["header"]["name"],
-                    description=row["header"].get("description"),
-                    display_name=row["header"]["displayName"],
-                    sharing_visibility=row["visibility"],
-                    created=row["header"]["created"] / 1000,
-                    modified=row["header"]["modified"] / 1000,
-                    group_type=row["type"],
-                )
-            )
-
-    return [model.model_dump() for model in out]
-
-
 def ts_org_membership(data: list[_types.APIResult], *, cluster: _types.GUID) -> _types.TableRowsFormat:
     """Reshapes users/search -> searchable.models.OrgMembership."""
     reshaped: _types.TableRowsFormat = []
@@ -215,21 +188,6 @@ def ts_group_membership(data: list[_types.APIResult], *, cluster: _types.GUID) -
     return reshaped
 
 
-def to_group_membership(data: ArbitraryJsonFormat, cluster: str) -> TableRowsFormat:
-    """Reshapes {groups|users}/search -> searchable.models.GroupMembership. Needed for V1 API."""
-    out: TableRowsFormat = []
-
-    for row in data:
-        for group in row["assignedGroups"]:
-            out.append(
-                models.GroupMembership.validated_init(
-                    cluster_guid=cluster, principal_guid=row["header"]["id"], group_guid=group
-                )
-            )
-
-    return [model.model_dump() for model in out]
-
-
 def ts_group_privilege(data: list[_types.APIResult], *, cluster: _types.GUID) -> _types.TableRowsFormat:
     """Reshapes {groups|users}/search -> searchable.models.GroupPrivilege."""
     reshaped: _types.TableRowsFormat = []
@@ -245,21 +203,6 @@ def ts_group_privilege(data: list[_types.APIResult], *, cluster: _types.GUID) ->
             )
 
     return reshaped
-
-
-def to_group_privilege(data: ArbitraryJsonFormat, cluster: str) -> TableRowsFormat:
-    """Reshapes {groups|users}/search -> searchable.models.GroupPrivilege. Needed for V1 API."""
-    out: TableRowsFormat = []
-
-    for row in data:
-        for privilege in row["privileges"]:
-            out.append(
-                models.GroupPrivilege.validated_init(
-                    cluster_guid=cluster, group_guid=row["header"]["id"], privilege=privilege
-                )
-            )
-
-    return [model.model_dump() for model in out]
 
 
 def ts_tag(data: list[_types.APIResult], *, cluster: _types.GUID, current_org: int) -> _types.TableRowsFormat:
@@ -663,83 +606,5 @@ def ts_audit_logs(data: list[_types.APIResult], *, cluster: _types.GUID) -> _typ
 
     # SORT AFTER TRANSFORM SO WE HAVE ACCESS TO THE SK.
     reshaped.sort(key=operator.itemgetter(*CLUSTER_KEY))
-
-    return reshaped
-
-
-def ts_ai_stats(data: list[_types.APIResult], *, cluster: _types.GUID) -> _types.TableRowsFormat:
-    """Reshapes /searchdata -> searchable.models.BIServer."""
-    reshaped: _types.TableRowsFormat = []
-
-    PARTITION_KEY = ft.partial(lambda r: r["ThoughtSpot Start Time"].date())
-    CLUSTER_KEY = ("ThoughtSpot Start Time", "User ID", "Visualization ID")
-
-    # KEEP TRACK OF DUPLICATE ROWS DUE TO DATA MANAGEMENT ISSUES.
-    seen: set[str] = set()
-
-    # ENSURE ALL DATA IS IN UTC PRIOR TO GENERATING ROW_NUMBERS.
-    data = [{**row, "ThoughtSpot Start Time": validators.ensure_datetime_is_utc.func(row["ThoughtSpot Start Time"])} for row in data]
-
-    # SORT PRIOR TO GROUP BY SO WE MAINTAIN CLUSTERING KEY SEMANTICS
-    data.sort(key=operator.itemgetter(*CLUSTER_KEY))
-
-    for row_date, rows in it.groupby(data, key=PARTITION_KEY):
-        # MANUAL ENUMERATION BECAUSE WE NEED TO ACCOUNT FOR DEDUPLICATION.
-        row_number = 0
-
-        for row in rows:
-            if (unique := f"{row['ThoughtSpot Start Time']}-{row['User ID']}-{row['Visualization ID']}") in seen:
-                continue
-
-            row_number += 1
-
-            reshaped.append(
-                models.AIStats.validated_init(
-                    **{
-                        "cluster_guid": cluster,
-                        "sk_dummy": f"{cluster}-{row_date}-{row_number}",
-                        "answer_session_id" :  row["Answer Session ID"],
-                        "query_latency" : row["Average Query Latency (External)"],
-                        "system_latency" :  row["Average System Latency (Overall)"],
-                        "connection" :  row["Connection"],
-                        "connection_id" :  row["Connection ID"],
-                        "db_auth_type" : row["DB Auth Type"],
-                        "db_type" :  row["DB Type"],
-                        "error_message" :  row["Error Message"],
-                        "external_database_query_id" : row["External Database Query ID"],
-                        "impressions" : row["Impressions"],
-                        "is_billable" :  row["Is Billable"],
-                        "is_system" :  row["Is System"],
-                        "model" :  row["Model"],
-                        "model_id" :  row["Model ID"],
-                        "object" :  row["Object"],
-                        "object_id" :  row["Object ID"],
-                        "object_subtype" :   row["Object Subtype"],
-                        "object_type" :  row["Object Type"],
-                        "org" :  row["Org"],
-                        "org_id" :   row["Org ID"],
-                        "query_count" :  row["Query Count"],
-                        "query_end_time" :  row["Query End Time"],
-                        "query_errors" :  row["Query Errors"],
-                        "query_start_time" :  row["Query Start Time"],
-                        "query_status" :  row["Query Status"],
-                        "sql_query" :  row["SQL Query"],
-                        "thoughtspot_query_id" :  row["ThoughtSpot Query ID"],
-                        "thoughtspot_start_time" :  row["ThoughtSpot Start Time"],
-                        "credits" :  row["Total Credits"],
-                        "nums_rows_fetched" :  row["Total Nums Rows Fetched"],
-                        "trace_id" :  row["Trace ID"],
-                        "user" :  row["User"],
-                        "user_action" :   row["User Action"],
-                        "user_action_count" :  row["User Action Count"],
-                        "user_count" :  row["User Count"],
-                        "user_display_name" :  row["User Display Name"],
-                        "user_id" :  row["User ID"],
-                        "visualization_id" :  row["Visualization ID"],
-                    }
-                ).model_dump()
-            )
-
-            seen.add(unique)
 
     return reshaped
